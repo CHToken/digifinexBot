@@ -97,27 +97,27 @@ cached_api_weights = None
 last_api_weight_time = 0
 server_time_offset = 0
 
-def sync_server_time():
-    """Sync local time with DigiFinex server time and store offset in milliseconds."""
-    global server_time_offset
-    url = f"{BASE_URL}/public/time"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("code") == 0:
-            server_time = int(data["data"])  # ms
-            local_time = int(time.time() * 1000)
-            server_time_offset = server_time - local_time
-            logging.info(f"Server time synced. Offset: {server_time_offset} ms "
-                         f"({server_time_offset/1000:.3f} seconds)")
-            return True
-        else:
-            logging.error(f"Failed to fetch server time: {data}")
-            return False
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error syncing server time: {e}")
-        return False
+def sync_server_time(attempts=3):
+    offsets = []
+    for _ in range(attempts):
+        url = f"{BASE_URL}/public/time"
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("code") == 0:
+                server_time = int(data["data"])
+                local_time = int(time.time() * 1000)
+                offsets.append(server_time - local_time)
+                time.sleep(0.5)
+        except Exception as e:
+            logging.error(f"Sync attempt failed: {e}")
+    if offsets:
+        global server_time_offset
+        server_time_offset = sum(offsets) // len(offsets)
+        logging.info(f"Server time synced. Offset: {server_time_offset} ms ({server_time_offset/1000:.3f} seconds)")
+        return True
+    return False
     
 def get_timestamp():
     """Return current timestamp adjusted by server time offset."""
@@ -161,9 +161,8 @@ def verify_signature(prehash, expected_signature):
     return computed_signature == expected_signature
 
 def digifinex_signed_request(method, endpoint, params=None, retries=3, backoff_factor=2):
-    """Make a signed request with server time sync and retry logic."""
     global server_time_offset
-    if server_time_offset == 0:  # Sync if not already done
+    if server_time_offset == 0:
         sync_server_time()
 
     for attempt in range(retries):
@@ -194,11 +193,10 @@ def digifinex_signed_request(method, endpoint, params=None, retries=3, backoff_f
             response.raise_for_status()
             data = response.json()
 
-            # Handle DigiFinex API errors
             if data.get("code") != 0:
                 msg = data.get("msg", "").lower()
                 if "timestamp" in msg or "access-timestamp" in msg:
-                    logging.warning("Timestamp error detected. Resyncing server time.")
+                    logging.warning(f"Timestamp error detected: {msg}. Resyncing server time.")
                     sync_server_time()
                     continue
                 logging.error(f"{method} {endpoint} failed: code={data.get('code')}, msg={data.get('msg')}")
@@ -208,18 +206,18 @@ def digifinex_signed_request(method, endpoint, params=None, retries=3, backoff_f
 
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code
+            error_body = e.response.text
+            logging.error(f"HTTP {status_code} on {method} {endpoint}: {error_body}")
             if status_code == 429:
                 retry_after = e.response.headers.get("Retry-After", "60")
                 logging.warning(f"429 Too Many Requests. Retrying in {retry_after}s...")
                 time.sleep(int(retry_after))
                 continue
             elif status_code == 401:
-                logging.warning("401 Unauthorized. Resyncing server time...")
+                logging.warning(f"401 Unauthorized: {error_body}. Resyncing server time...")
                 sync_server_time()
                 continue
-            else:
-                logging.error(f"HTTP {status_code}: {e.response.text}")
-                return None
+            return None
         except requests.exceptions.RequestException as e:
             logging.error(f"Request failed: {e}")
             return None
@@ -315,16 +313,22 @@ def get_ohlcv(symbol, timeframe='5m', limit=100):
         return None
 
 def calculate_indicators(df):
-    """Calculate RSI and EMAs, and log their statistics."""
+    """Calculate RSI, EMAs, and Bollinger Bands, and log their statistics."""
     try:
         if TA_LIB_AVAILABLE:
             df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
             df['ema9'] = ta.trend.EMAIndicator(df['close'], window=9).ema_indicator()
             df['ema21'] = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator()
+            bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2)
+            df['bb_upper'] = bb.bollinger_hband()
+            df['bb_lower'] = bb.bollinger_lband()
         else:
             df['rsi'] = ta_fallback.rsi(df['close'], period=14)
             df['ema9'] = ta_fallback.ema(df['close'], period=9)
             df['ema21'] = ta_fallback.ema(df['close'], period=21)
+            # Fallback Bollinger Bands calculation
+            df['bb_upper'] = df['close'].rolling(20).mean() + 2 * df['close'].rolling(20).std()
+            df['bb_lower'] = df['close'].rolling(20).mean() - 2 * df['close'].rolling(20).std()
 
         # Log indicator statistics
         logging.info("Calculated indicators successfully")
@@ -332,14 +336,19 @@ def calculate_indicators(df):
         
         # Latest values
         latest = df.iloc[-1]
-        logging.info(f"Latest values - RSI: {latest['rsi']:.2f}, EMA9: {latest['ema9']:.2f}, EMA21: {latest['ema21']:.2f}")
+        logging.info(f"Latest values - RSI: {latest['rsi']:.2f}, EMA9: {latest['ema9']:.2f}, "
+                     f"EMA21: {latest['ema21']:.2f}, BB_Upper: {latest['bb_upper']:.2f}, "
+                     f"BB_Lower: {latest['bb_lower']:.2f}")
         
         # Statistical summary
         stats = df[['rsi', 'ema9', 'ema21']].describe()
         logging.info("Indicator statistics:")
-        logging.info(f"RSI - Mean: {stats['rsi']['mean']:.2f}, Min: {stats['rsi']['min']:.2f}, Max: {stats['rsi']['max']:.2f}, Std: {stats['rsi']['std']:.2f}")
-        logging.info(f"EMA9 - Mean: {stats['ema9']['mean']:.2f}, Min: {stats['ema9']['min']:.2f}, Max: {stats['ema9']['max']:.2f}, Std: {stats['ema9']['std']:.2f}")
-        logging.info(f"EMA21 - Mean: {stats['ema21']['mean']:.2f}, Min: {stats['ema21']['min']:.2f}, Max: {stats['ema21']['max']:.2f}, Std: {stats['ema21']['std']:.2f}")
+        logging.info(f"RSI - Mean: {stats['rsi']['mean']:.2f}, Min: {stats['rsi']['min']:.2f}, "
+                     f"Max: {stats['rsi']['max']:.2f}, Std: {stats['rsi']['std']:.2f}")
+        logging.info(f"EMA9 - Mean: {stats['ema9']['mean']:.2f}, Min: {stats['ema9']['min']:.2f}, "
+                     f"Max: {stats['ema9']['max']:.2f}, Std: {stats['ema9']['std']:.2f}")
+        logging.info(f"EMA21 - Mean: {stats['ema21']['mean']:.2f}, Min: {stats['ema21']['min']:.2f}, "
+                     f"Max: {stats['ema21']['max']:.2f}, Std: {stats['ema21']['std']:.2f}")
 
         return df
     except Exception as e:
@@ -557,11 +566,14 @@ def main():
                 latest = df.iloc[-1]
                 prev = df.iloc[-2]
 
-                long_signal = (latest['rsi'] < 35 and latest['ema9'] < latest['ema21'])
-                short_signal = (latest['rsi'] > 65 and latest['ema9'] > latest['ema21'])
+                long_signal = (latest['rsi'] < 50 and latest['ema9'] < latest['ema21']) or \
+                             (latest['close'] <= latest['bb_lower'] and latest['rsi'] < 55)
+                short_signal = (latest['rsi'] > 55 and latest['ema9'] > latest['ema21']) or \
+                              (latest['close'] >= latest['bb_upper'] and latest['rsi'] > 50)
 
                 logging.debug(f"RSI: {latest['rsi']:.2f}, EMA9: {latest['ema9']:.2f}, EMA21: {latest['ema21']:.2f}, "
-                              f"Long: {long_signal}, Short: {short_signal}")
+                             f"BB_Upper: {latest['bb_upper']:.2f}, BB_Lower: {latest['bb_lower']:.2f}, "
+                             f"Long: {long_signal}, Short: {short_signal}")
 
                 if current_time - last_position_check > 30:
                     position = check_position()
