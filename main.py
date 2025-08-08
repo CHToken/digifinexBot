@@ -52,6 +52,12 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)
 handler.addFilter(EssentialLogFilter())
 logger.addHandler(handler)
 
+# Add console handler for Railway logs
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
+
 # DigiFinex API credentials
 API_KEY = os.getenv("DIGIFINEX_API_KEY", "")
 SECRET_KEY = os.getenv("DIGIFINEX_SECRET_KEY", "")
@@ -666,3 +672,4 @@ if __name__ == "__main__":
         if current_order_id:
             cancel_algo_order()
             close_order(current_order_id)
+
