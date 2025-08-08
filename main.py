@@ -63,11 +63,11 @@ CCXT_SYMBOL = "BTC/USDT:USDT"
 MARGIN = 2.5  # For 0.001 BTC contract
 LEVERAGE = 50
 CONTRACT_SIZE = 0.001  # 1 contract = 0.001 BTC
-PROFIT_TARGET = 0.03  # 3%
-STOP_LOSS = 0.0075  # 0.75%
-MIN_HOLD_TIME = 300  # 5 minutes
+PROFIT_TARGET = 0.05  # 3%
+STOP_LOSS = 0.03  # 0.75%
+MIN_HOLD_TIME = 200  # 5 minutes
 TRADES_PER_DAY = 200  # Increased to ensure $1M monthly volume
-MINIMUM_BALANCE = 2.4  # For 0.001 BTC contract
+MINIMUM_BALANCE = 2.5  # For 0.001 BTC contract
 MARGIN_MODE = "isolated"
 
 # Initialize exchange
@@ -650,6 +650,7 @@ def main():
         raise
 
 if __name__ == "__main__":
+    logging.info("Scalping bot main.py is running")
     try:
         while True:
             main()
