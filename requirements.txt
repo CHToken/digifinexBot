@@ -1,0 +1,6 @@
+requests
+ccxt
+pandas
+ta
+technical-analysis   # optional fallback
+python-dotenv
